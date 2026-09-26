@@ -41,9 +41,6 @@ importers:
       '@mediapipe/tasks-vision':
         specifier: ^0.10.17
         version: 0.10.35
-      '@twa-dev/sdk':
-        specifier: ^7.10.1
-        version: 7.10.1(react@18.3.1)
       react:
         specifier: ^18.3.1
         version: 18.3.1
@@ -1152,14 +1149,6 @@ packages:
   '@trickfilm400/rollup-plugin-off-main-thread@3.0.0-pre1':
     resolution: {integrity: sha512-/67zpWDBLV+oYAEL682s1ktXL0HgqX76f6gaVGkGnVZlBbm1zd0v4Bz8MFF2GGhoX9rvfq3KSQHubFHwa6w6/Q==}
     engines: {node: '>=12'}
-
-  '@twa-dev/sdk@7.10.1':
-    resolution: {integrity: sha512-mY9JaBPspYfLdzoaARVmr0GKXUO3X4hi1vuP+04UUFWST2lB50xGSxExOFz5I3vBaxnrdLregBGiaitvvWaX6w==}
-    peerDependencies:
-      react: ^18.3.1
-
-  '@twa-dev/types@7.10.0':
-    resolution: {integrity: sha512-BXHyNLXy+cPbOZ2qQq5ArPKcP4kUfuX3YBSFT0XUxtMNWAzvyMuYAiq59UTfQ8OnELXlfChrAoIT3c2pujBtcQ==}
 
   '@types/babel__core@7.20.5':
     resolution: {integrity: sha512-qoQprZvz5wQFJwMDqeseRXWv3rqMvhgpbXFfVyWhbx9X47POIA6i/+dXefEmZKoAgOaTdaIgNSMqMIU61yRyzA==}
@@ -3326,13 +3315,6 @@ snapshots:
       json5: 2.2.3
       magic-string: 0.30.21
       string.prototype.matchall: 4.1.0
-
-  '@twa-dev/sdk@7.10.1(react@18.3.1)':
-    dependencies:
-      '@twa-dev/types': 7.10.0
-      react: 18.3.1
-
-  '@twa-dev/types@7.10.0': {}
 
   '@types/babel__core@7.20.5':
     dependencies:

@@ -1,62 +1,78 @@
 import Fastify from "fastify";
 import { PrismaClient } from "@prisma/client";
 import { CURRENT_CONSENT_VERSION } from "@dunkhub/shared";
-import { verifyTelegramInitData } from "./telegramAuth.js";
+import { hashPassword, verifyPassword, signToken, verifyToken } from "./auth.js";
 
 const prisma = new PrismaClient();
 const app = Fastify({ logger: true });
-const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN ?? "";
 
-app.decorateRequest("telegramUser", null);
+const PUBLIC_ROUTES = new Set(["/health", "/auth/register", "/auth/login"]);
 
 app.addHook("preHandler", async (req, reply) => {
-  if (req.url === "/health") return;
-  const initData = req.headers["x-telegram-init-data"];
-  if (typeof initData !== "string") {
-    return reply.code(401).send({ error: "missing_init_data" });
-  }
-  const telegramUser = verifyTelegramInitData(initData, BOT_TOKEN);
-  if (!telegramUser) {
-    return reply.code(401).send({ error: "invalid_init_data" });
-  }
-  (req as any).telegramUser = telegramUser;
+  if (PUBLIC_ROUTES.has(req.url)) return;
+
+  const authHeader = req.headers["authorization"];
+  const token = typeof authHeader === "string" ? authHeader.replace(/^Bearer\s+/i, "") : null;
+  if (!token) return reply.code(401).send({ error: "missing_token" });
+
+  const userId = verifyToken(token);
+  if (!userId) return reply.code(401).send({ error: "invalid_token" });
+
+  (req as any).userId = userId;
 });
 
 app.get("/health", async () => ({ status: "ok" }));
 
-app.post("/consent", async (req, reply) => {
-  const telegramUser = (req as any).telegramUser;
-  const { scope } = req.body as { scope: string };
+app.post("/auth/register", async (req, reply) => {
+  const { email, password, displayName } = req.body as Record<string, unknown>;
+  if (typeof email !== "string" || typeof password !== "string" || password.length < 8) {
+    return reply.code(400).send({ error: "invalid_input" });
+  }
 
-  const user = await prisma.user.upsert({
-    where: { telegramId: telegramUser.userId },
-    create: {
-      telegramId: telegramUser.userId,
-      username: telegramUser.username,
-      firstName: telegramUser.firstName,
-      lastName: telegramUser.lastName,
+  const existing = await prisma.user.findUnique({ where: { email } });
+  if (existing) return reply.code(409).send({ error: "email_taken" });
+
+  const user = await prisma.user.create({
+    data: {
+      email,
+      passwordHash: hashPassword(password),
+      displayName: typeof displayName === "string" ? displayName : null,
     },
-    update: {},
   });
 
+  return reply.send({ token: signToken(user.id), user: { id: user.id, email: user.email, displayName: user.displayName } });
+});
+
+app.post("/auth/login", async (req, reply) => {
+  const { email, password } = req.body as Record<string, unknown>;
+  if (typeof email !== "string" || typeof password !== "string") {
+    return reply.code(400).send({ error: "invalid_input" });
+  }
+
+  const user = await prisma.user.findUnique({ where: { email } });
+  if (!user || !verifyPassword(password, user.passwordHash)) {
+    return reply.code(401).send({ error: "invalid_credentials" });
+  }
+
+  return reply.send({ token: signToken(user.id), user: { id: user.id, email: user.email, displayName: user.displayName } });
+});
+
+app.post("/consent", async (req, reply) => {
+  const userId = (req as any).userId as string;
+  const { scope } = req.body as { scope: string };
+
   const consent = await prisma.consentRecord.create({
-    data: {
-      userId: user.id,
-      scope,
-      version: CURRENT_CONSENT_VERSION,
-    },
+    data: { userId, scope, version: CURRENT_CONSENT_VERSION },
   });
 
   return reply.send(consent);
 });
 
 app.post("/jumps", async (req, reply) => {
-  const telegramUser = (req as any).telegramUser;
-  const user = await prisma.user.findUnique({ where: { telegramId: telegramUser.userId } });
-  if (!user) return reply.code(404).send({ error: "user_not_found" });
+  const userId = (req as any).userId as string;
 
   const activeConsent = await prisma.consentRecord.findFirst({
-    where: { userId: user.id, scope: "anonymized_data_research", revokedAt: null },
+    where: { userId, scope: "anonymized_data_research", revokedAt: null },
   });
   if (!activeConsent) {
     return reply.code(403).send({ error: "consent_required" });
@@ -73,7 +89,7 @@ app.post("/jumps", async (req, reply) => {
 
   const jump = await prisma.jumpMeasurement.create({
     data: {
-      userId: user.id,
+      userId,
       type: type as string,
       heightCm: heightCm as number,
       flightTimeMs: flightTimeMs as number,
@@ -87,12 +103,10 @@ app.post("/jumps", async (req, reply) => {
 });
 
 app.get("/jumps", async (req, reply) => {
-  const telegramUser = (req as any).telegramUser;
-  const user = await prisma.user.findUnique({ where: { telegramId: telegramUser.userId } });
-  if (!user) return reply.send([]);
+  const userId = (req as any).userId as string;
 
   const jumps = await prisma.jumpMeasurement.findMany({
-    where: { userId: user.id },
+    where: { userId },
     orderBy: { capturedAt: "desc" },
     take: 50,
   });
@@ -104,15 +118,13 @@ function startOfDay(d: Date) {
 }
 
 app.post("/recovery-checkins", async (req, reply) => {
-  const telegramUser = (req as any).telegramUser;
-  const user = await prisma.user.findUnique({ where: { telegramId: telegramUser.userId } });
-  if (!user) return reply.code(404).send({ error: "user_not_found" });
+  const userId = (req as any).userId as string;
 
   const { sorenessLevel, sleepHours, rpe } = req.body as Record<string, unknown>;
   const today = startOfDay(new Date());
 
   const existing = await prisma.recoveryCheckin.findFirst({
-    where: { userId: user.id, checkedAt: { gte: today } },
+    where: { userId, checkedAt: { gte: today } },
   });
 
   const checkin = existing
@@ -122,7 +134,7 @@ app.post("/recovery-checkins", async (req, reply) => {
       })
     : await prisma.recoveryCheckin.create({
         data: {
-          userId: user.id,
+          userId,
           sorenessLevel: sorenessLevel as number,
           sleepHours: sleepHours as number,
           rpe: rpe as number,
@@ -139,27 +151,21 @@ app.post("/recovery-checkins", async (req, reply) => {
 // coarse proxy (a jump session isn't a jump count), good enough to flag
 // direction, not precise enough to be the only signal.
 app.get("/injury-risk", async (req, reply) => {
-  const telegramUser = (req as any).telegramUser;
-  const user = await prisma.user.findUnique({ where: { telegramId: telegramUser.userId } });
-  if (!user) return reply.code(404).send({ error: "user_not_found" });
+  const userId = (req as any).userId as string;
 
   const now = new Date();
   const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
   const twentyEightDaysAgo = new Date(now.getTime() - 28 * 24 * 60 * 60 * 1000);
 
   const [acuteCount, chronicCount, recentJumps, latestCheckin] = await Promise.all([
-    prisma.jumpMeasurement.count({ where: { userId: user.id, capturedAt: { gte: sevenDaysAgo } } }),
-    prisma.jumpMeasurement.count({ where: { userId: user.id, capturedAt: { gte: twentyEightDaysAgo } } }),
+    prisma.jumpMeasurement.count({ where: { userId, capturedAt: { gte: sevenDaysAgo } } }),
+    prisma.jumpMeasurement.count({ where: { userId, capturedAt: { gte: twentyEightDaysAgo } } }),
     prisma.jumpMeasurement.findMany({
-      where: {
-        userId: user.id,
-        leftKneeValgusRatio: { not: null },
-        rightKneeValgusRatio: { not: null },
-      },
+      where: { userId, leftKneeValgusRatio: { not: null }, rightKneeValgusRatio: { not: null } },
       orderBy: { capturedAt: "desc" },
       take: 10,
     }),
-    prisma.recoveryCheckin.findFirst({ where: { userId: user.id }, orderBy: { checkedAt: "desc" } }),
+    prisma.recoveryCheckin.findFirst({ where: { userId }, orderBy: { checkedAt: "desc" } }),
   ]);
 
   const chronicWeeklyAvg = chronicCount / 4;
