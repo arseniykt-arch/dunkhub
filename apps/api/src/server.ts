@@ -1,10 +1,15 @@
 import Fastify from "fastify";
+import cors from "@fastify/cors";
 import { PrismaClient } from "@prisma/client";
 import { CURRENT_CONSENT_VERSION } from "@dunkhub/shared";
 import { hashPassword, verifyPassword, signToken, verifyToken } from "./auth.js";
 
 const prisma = new PrismaClient();
 const app = Fastify({ logger: true });
+
+await app.register(cors, {
+  origin: process.env.WEB_ORIGIN?.split(",") ?? true,
+});
 
 const PUBLIC_ROUTES = new Set(["/health", "/auth/register", "/auth/login"]);
 
