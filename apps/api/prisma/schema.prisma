@@ -1,0 +1,50 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id             String   @id @default(uuid())
+  telegramId     String   @unique
+  username       String?
+  firstName      String?
+  lastName       String?
+  heightCm       Float?
+  createdAt      DateTime @default(now())
+
+  consents       ConsentRecord[]
+  jumps          JumpMeasurement[]
+}
+
+// A user cannot record a jump without an active anonymized_data_research
+// consent — enforced at the API layer before any JumpMeasurement write.
+model ConsentRecord {
+  id         String   @id @default(uuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id])
+  scope      String
+  version    String
+  acceptedAt DateTime @default(now())
+  revokedAt  DateTime?
+
+  @@index([userId, scope])
+}
+
+model JumpMeasurement {
+  id                String   @id @default(uuid())
+  userId            String
+  user              User     @relation(fields: [userId], references: [id])
+  type              String
+  heightCm          Float
+  flightTimeMs      Float
+  contactTimeMs     Float?
+  leftLegLoadRatio  Float?
+  rightLegLoadRatio Float?
+  capturedAt        DateTime @default(now())
+
+  @@index([userId, capturedAt])
+}
