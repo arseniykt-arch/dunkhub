@@ -18,6 +18,7 @@ model User {
 
   consents       ConsentRecord[]
   jumps          JumpMeasurement[]
+  recoveryCheckins RecoveryCheckin[]
 }
 
 // A user cannot record a jump without an active anonymized_data_research
@@ -42,9 +43,28 @@ model JumpMeasurement {
   heightCm          Float
   flightTimeMs      Float
   contactTimeMs     Float?
-  leftLegLoadRatio  Float?
-  rightLegLoadRatio Float?
+  // Landing knee valgus proxy: horizontal deviation of the knee from the
+  // hip-ankle line at landing, normalized by shank length. Higher = more
+  // inward knee collapse, a known ACL-injury-risk marker. Null until the
+  // frontend lands a frame with both knees clearly visible.
+  leftKneeValgusRatio  Float?
+  rightKneeValgusRatio Float?
   capturedAt        DateTime @default(now())
 
   @@index([userId, capturedAt])
+}
+
+// One check-in per day per user (enforced at the API layer, not a DB
+// constraint, so a resubmission on the same day overwrites rather than
+// errors — matches how a "how do you feel today" form is actually used).
+model RecoveryCheckin {
+  id            String   @id @default(uuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id])
+  sorenessLevel Int      // 1 (none) - 5 (severe)
+  sleepHours    Float
+  rpe           Int      // session RPE 1-10, previous day's training
+  checkedAt     DateTime @default(now())
+
+  @@index([userId, checkedAt])
 }

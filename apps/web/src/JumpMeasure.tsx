@@ -7,6 +7,21 @@ const GRAVITY_CM_PER_S2 = 980.665;
 const VELOCITY_THRESHOLD = 0.9;
 
 type Phase = "idle" | "loading_model" | "ready" | "airborne" | "result" | "error";
+type Landmark = { x: number; y: number };
+
+// Horizontal deviation of the knee from the straight hip-ankle line at the
+// knee's height, normalized by leg length. ~0 = knee tracks over the foot;
+// larger values = inward/outward collapse (valgus/varus). Sign depends on
+// camera facing direction, so only magnitude (and left/right asymmetry) is
+// meaningful — this is a coarse frontal-plane proxy, not a clinical angle.
+function kneeDeviationRatio(hip: Landmark, knee: Landmark, ankle: Landmark): number | null {
+  const legLength = Math.hypot(ankle.x - hip.x, ankle.y - hip.y);
+  if (legLength < 1e-6) return null;
+  const dy = ankle.y - hip.y;
+  const t = Math.abs(dy) < 1e-6 ? 0.5 : (knee.y - hip.y) / dy;
+  const expectedX = hip.x + t * (ankle.x - hip.x);
+  return (knee.x - expectedX) / legLength;
+}
 
 export function JumpMeasure() {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -85,7 +100,9 @@ export function JumpMeasure() {
           setPhase("airborne");
         } else if (takeoffTimeRef.current !== null && velocity < -VELOCITY_THRESHOLD) {
           const flightTimeS = t - takeoffTimeRef.current;
-          finish(flightTimeS);
+          const leftKneeValgusRatio = kneeDeviationRatio(landmarks[23], landmarks[25], landmarks[27]);
+          const rightKneeValgusRatio = kneeDeviationRatio(landmarks[24], landmarks[26], landmarks[28]);
+          finish(flightTimeS, leftKneeValgusRatio, rightKneeValgusRatio);
           return;
         }
       }
@@ -96,7 +113,11 @@ export function JumpMeasure() {
     rafRef.current = requestAnimationFrame(detectLoop);
   }
 
-  async function finish(flightTimeS: number) {
+  async function finish(
+    flightTimeS: number,
+    leftKneeValgusRatio: number | null,
+    rightKneeValgusRatio: number | null,
+  ) {
     const stream = videoRef.current?.srcObject as MediaStream | undefined;
     stream?.getTracks().forEach((track) => track.stop());
 
@@ -108,7 +129,13 @@ export function JumpMeasure() {
     try {
       await apiFetch("/jumps", {
         method: "POST",
-        body: JSON.stringify({ type: "standing_vertical", heightCm, flightTimeMs }),
+        body: JSON.stringify({
+          type: "standing_vertical",
+          heightCm,
+          flightTimeMs,
+          leftKneeValgusRatio,
+          rightKneeValgusRatio,
+        }),
       });
     } catch (e) {
       setError(`Замер посчитан, но не сохранён: ${(e as Error).message}`);

@@ -62,8 +62,14 @@ app.post("/jumps", async (req, reply) => {
     return reply.code(403).send({ error: "consent_required" });
   }
 
-  const { type, heightCm, flightTimeMs, contactTimeMs, leftLegLoadRatio, rightLegLoadRatio } =
-    req.body as Record<string, unknown>;
+  const {
+    type,
+    heightCm,
+    flightTimeMs,
+    contactTimeMs,
+    leftKneeValgusRatio,
+    rightKneeValgusRatio,
+  } = req.body as Record<string, unknown>;
 
   const jump = await prisma.jumpMeasurement.create({
     data: {
@@ -72,8 +78,8 @@ app.post("/jumps", async (req, reply) => {
       heightCm: heightCm as number,
       flightTimeMs: flightTimeMs as number,
       contactTimeMs: contactTimeMs as number | null,
-      leftLegLoadRatio: leftLegLoadRatio as number | null,
-      rightLegLoadRatio: rightLegLoadRatio as number | null,
+      leftKneeValgusRatio: leftKneeValgusRatio as number | null,
+      rightKneeValgusRatio: rightKneeValgusRatio as number | null,
     },
   });
 
@@ -91,6 +97,100 @@ app.get("/jumps", async (req, reply) => {
     take: 50,
   });
   return reply.send(jumps);
+});
+
+function startOfDay(d: Date) {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+}
+
+app.post("/recovery-checkins", async (req, reply) => {
+  const telegramUser = (req as any).telegramUser;
+  const user = await prisma.user.findUnique({ where: { telegramId: telegramUser.userId } });
+  if (!user) return reply.code(404).send({ error: "user_not_found" });
+
+  const { sorenessLevel, sleepHours, rpe } = req.body as Record<string, unknown>;
+  const today = startOfDay(new Date());
+
+  const existing = await prisma.recoveryCheckin.findFirst({
+    where: { userId: user.id, checkedAt: { gte: today } },
+  });
+
+  const checkin = existing
+    ? await prisma.recoveryCheckin.update({
+        where: { id: existing.id },
+        data: { sorenessLevel: sorenessLevel as number, sleepHours: sleepHours as number, rpe: rpe as number },
+      })
+    : await prisma.recoveryCheckin.create({
+        data: {
+          userId: user.id,
+          sorenessLevel: sorenessLevel as number,
+          sleepHours: sleepHours as number,
+          rpe: rpe as number,
+        },
+      });
+
+  return reply.send(checkin);
+});
+
+// ACWR (acute:chronic workload ratio): jump count in the last 7 days versus
+// the 4-week rolling weekly average, using jump count as a training-load
+// proxy. Standard sports-science bands: <0.8 undertraining, 0.8-1.3 optimal
+// ("sweet spot"), 1.3-1.5 caution, >1.5 elevated injury risk. This is a
+// coarse proxy (a jump session isn't a jump count), good enough to flag
+// direction, not precise enough to be the only signal.
+app.get("/injury-risk", async (req, reply) => {
+  const telegramUser = (req as any).telegramUser;
+  const user = await prisma.user.findUnique({ where: { telegramId: telegramUser.userId } });
+  if (!user) return reply.code(404).send({ error: "user_not_found" });
+
+  const now = new Date();
+  const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+  const twentyEightDaysAgo = new Date(now.getTime() - 28 * 24 * 60 * 60 * 1000);
+
+  const [acuteCount, chronicCount, recentJumps, latestCheckin] = await Promise.all([
+    prisma.jumpMeasurement.count({ where: { userId: user.id, capturedAt: { gte: sevenDaysAgo } } }),
+    prisma.jumpMeasurement.count({ where: { userId: user.id, capturedAt: { gte: twentyEightDaysAgo } } }),
+    prisma.jumpMeasurement.findMany({
+      where: {
+        userId: user.id,
+        leftKneeValgusRatio: { not: null },
+        rightKneeValgusRatio: { not: null },
+      },
+      orderBy: { capturedAt: "desc" },
+      take: 10,
+    }),
+    prisma.recoveryCheckin.findFirst({ where: { userId: user.id }, orderBy: { checkedAt: "desc" } }),
+  ]);
+
+  const chronicWeeklyAvg = chronicCount / 4;
+  const acwr = chronicWeeklyAvg > 0 ? acuteCount / chronicWeeklyAvg : null;
+
+  let workloadBand: "insufficient_data" | "undertraining" | "optimal" | "caution" | "high_risk" =
+    "insufficient_data";
+  if (acwr !== null) {
+    if (acwr < 0.8) workloadBand = "undertraining";
+    else if (acwr <= 1.3) workloadBand = "optimal";
+    else if (acwr <= 1.5) workloadBand = "caution";
+    else workloadBand = "high_risk";
+  }
+
+  const asymmetryScores = recentJumps.map(
+    (j) => Math.abs((j.leftKneeValgusRatio ?? 0) - (j.rightKneeValgusRatio ?? 0)),
+  );
+  const avgAsymmetry =
+    asymmetryScores.length > 0
+      ? asymmetryScores.reduce((a, b) => a + b, 0) / asymmetryScores.length
+      : null;
+  const asymmetryFlag = avgAsymmetry !== null && avgAsymmetry > 0.15;
+
+  return reply.send({
+    acwr,
+    workloadBand,
+    acuteJumpCount7d: acuteCount,
+    chronicWeeklyAvg28d: chronicWeeklyAvg,
+    kneeAsymmetry: { avgAsymmetry, flag: asymmetryFlag, sampleSize: asymmetryScores.length },
+    latestCheckin,
+  });
 });
 
 const port = Number(process.env.PORT ?? 3001);
