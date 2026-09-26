@@ -6,6 +6,6 @@
   "scripts": {
     "dev:web": "pnpm --filter @dunkhub/web dev",
     "dev:api": "pnpm --filter @dunkhub/api dev",
-    "build": "pnpm -r build"
+    "build": "pnpm --filter @dunkhub/shared build && pnpm --filter @dunkhub/api build && pnpm --filter @dunkhub/web build"
   }
 }
